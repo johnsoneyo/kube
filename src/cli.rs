@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 
-pub mod pods;
-pub mod logs;
 pub mod ctx;
+pub mod logs;
+pub mod pods;
 pub mod status;
 
 #[derive(Parser, Debug)]
@@ -43,4 +43,47 @@ pub enum Commands {
         #[command(subcommand)]
         command: status::StatusCmd,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_parses_context_namespace_and_pod_filter() {
+        let cli = Cli::try_parse_from([
+            "kube",
+            "--context",
+            "prod",
+            "--namespace",
+            "payments",
+            "pods",
+            "list",
+            "api",
+        ])
+        .expect("cli should parse pod command with context and namespace");
+
+        assert_eq!(cli.context.as_deref(), Some("prod"));
+        assert_eq!(cli.namespace.as_deref(), Some("payments"));
+        match cli.command {
+            Commands::Pods { command } => match command {
+                pods::PodsCmd::List { filter } => assert_eq!(filter.as_deref(), Some("api")),
+            },
+            _ => panic!("expected pods command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_ctx_current_command() {
+        let cli =
+            Cli::try_parse_from(["kube", "ctx", "current"]).expect("ctx command should parse");
+
+        match cli.command {
+            Commands::Ctx { command } => match command {
+                ctx::CtxCmd::Current => {}
+                _ => panic!("expected current context command"),
+            },
+            _ => panic!("expected ctx command"),
+        }
+    }
 }

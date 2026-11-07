@@ -1,4 +1,3 @@
-
 #[allow(dead_code)]
 pub struct AppContext {
     pub namespace: Option<String>,
@@ -6,7 +5,6 @@ pub struct AppContext {
 }
 
 impl AppContext {
-
     pub fn kubectl_base_args(&self) -> Vec<String> {
         let mut args = vec![];
 

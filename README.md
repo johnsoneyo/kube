@@ -1,125 +1,112 @@
-Here’s a clean, professional `README.md` tailored to your Rust Kubernetes CLI project structure:
+# kube
 
----
+A lightweight Kubernetes companion CLI written in Rust. It builds on `kubectl` without introducing a shelling-out layer and keeps the command parsing, context selection, and execution concerns separated.
 
-# 🦀 Kube CLI (Rust)
+## Features
 
-A lightweight, modular Kubernetes CLI built in Rust. This project provides a structured foundation for interacting with Kubernetes resources such as pods, logs, and cluster status.
+- `pods list [filter]` to list pod resources with optional filtering
+- `logs follow <pod> [--tail N]` to stream a pod log stream
+- `logs show <pod> [--tail N]` to fetch logs once
+- `ctx current` to show the active Kubernetes context
+- `ctx list` to list configured contexts
+- `ctx use <name>` to switch the active context
+- `status overview|pods|deployments|issues` to summarize cluster health
 
-## 📁 Project Structure
+## Prerequisites
 
-```
-kube/
-├── src/
-│   ├── cli/
-│   │   ├── ctx.rs        # Context handling (cluster, namespace, etc.)
-│   │   ├── logs.rs       # Logs command implementation
-│   │   ├── pods.rs       # Pods command implementation
-│   │   └── status.rs     # Cluster/status command
-│   │
-│   ├── config/           # Configuration handling
-│   ├── kube/             # Core Kubernetes logic
-│   ├── kubectl/          # kubectl integration layer
-│   │
-│   ├── main.rs           # Entry point
-│   ├── cli.rs            # CLI argument parsing
-│   ├── context.rs        # Shared context logic
-│   └── di.rs             # Dependency injection / wiring
-│
-├── target/               # Build artifacts
-├── Cargo.toml
-└── Cargo.lock
-```
+- Rust stable toolchain
+- Kubernetes cluster access or a valid `kubectl` config
+- `kubectl` installed and on `PATH`
 
-## 🚀 Features
-
-* Modular CLI command structure
-* Separation of concerns (CLI, config, core logic)
-* Kubernetes resource interaction
-* Extensible command system
-* Rust-native performance and safety
-
-## 🛠️ Getting Started
-
-### Prerequisites
-
-* Rust (latest stable)
-* Kubernetes cluster access
-* `kubectl` installed and configured
-
-### Build
+## Installation
 
 ```bash
-cargo build
+cargo build --release
 ```
 
-### Run
+## Usage
 
 ```bash
-cargo run -- <command>
+# list pods in the current context
+cargo run -- pods list
+
+# list pods with a namespace and context override
+cargo run -- --context prod --namespace payments pods list api
+
+# stream pod logs
+cargo run -- logs follow api --tail 100
+
+# display the current context
+cargo run -- ctx current
+
+# switch to a different kube context
+cargo run -- ctx use staging
+
+# view overall status
+cargo run -- status overview
 ```
 
-Or after building:
+## Command reference
+
+### Pods
 
 ```bash
-./target/debug/kube <command>
+kube pods list [filter]
 ```
 
-## 📌 Available Commands
+- `filter` is optional and matches against the pod name or row content.
+- Global flags `--context` and `--namespace` are forwarded to `kubectl` automatically.
 
-*(Based on current modules — expand as implemented)*
-
-* `pods` — List and inspect pods
-* `logs` — Fetch logs from pods
-* `status` — Show cluster or resource status
-* `ctx` — Manage or display current context
-
-## 🧩 Architecture Overview
-
-* **cli/** → Command implementations
-* **config/** → Configuration loading and parsing
-* **kube/** → Kubernetes API logic
-* **kubectl/** → Wrapper or integration with kubectl
-* **di.rs** → Dependency injection and service wiring
-
-This structure keeps the codebase maintainable and scalable as more commands and features are added.
-
-## 🔧 Development
-
-### Run tests
+### Logs
 
 ```bash
-cargo test
+kube logs follow <pod-name> [--tail N]
+kube logs show <pod-name> [--tail N]
 ```
 
-### Format code
+- `follow` uses a streamed process and prints each log line as it arrives.
+- `show` reads the log stream once and exits after completion.
+
+### Context
+
+```bash
+kube ctx current
+kube ctx list
+kube ctx use <name>
+```
+
+### Status
+
+```bash
+kube status overview
+kube status pods
+kube status deployments
+kube status issues
+```
+
+This summarizes pod health and deployment availability from `kubectl get ...` output without requiring additional dependencies.
+
+## Architecture
+
+- `src/main.rs` launches the CLI and dispatches commands.
+- `src/cli/` contains the Clap command definitions and handlers.
+- `src/context.rs` stores the shared namespace and context override.
+- `src/di.rs` defines the `Executor` abstraction used for testable `kubectl` interaction.
+
+## Development
 
 ```bash
 cargo fmt
+cargo check
+cargo clippy --all-targets -- -D warnings
+cargo test
 ```
 
-### Lint
+## CI
 
-```bash
-cargo clippy
-```
+GitHub Actions runs format, compile, lint, and test checks on each push and pull request via `.github/workflows/ci.yml`.
 
-## 📈 Future Improvements
+## License
 
-* Add async support for API calls
-* Implement caching layer
-* Improve error handling and logging
-* Add support for more Kubernetes resources
-* Interactive TUI mode
+This project is licensed under the MIT License. See the repository license file for the full text.
 
-## 🤝 Contributing
-
-Contributions are welcome. Feel free to open issues or submit pull requests.
-
-## 📄 License
-
-MIT License (or specify your preferred license)
-
----
-
-If you want, I can tailor this further (e.g., add actual command usage examples, flags, or wire it to a specific crate like `kube-rs` or `clap`).
