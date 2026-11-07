@@ -1,11 +1,11 @@
 # kube
 
-A lightweight Kubernetes companion CLI written in Rust. It builds on `kubectl` without introducing a shelling-out layer and keeps the command parsing, context selection, and execution concerns separated.
+A lightweight Kubernetes companion CLI written in Rust. It wraps `kubectl` behind a small executor abstraction so the command layer can be tested without a live cluster.
 
 ## Features
 
 - `pods list [filter]` to list pod resources with optional filtering
-- `logs follow <pod> [--tail N]` to stream a pod log stream
+- `logs follow <pod> [--tail N]` to stream pod logs
 - `logs show <pod> [--tail N]` to fetch logs once
 - `ctx current` to show the active Kubernetes context
 - `ctx list` to list configured contexts
@@ -27,10 +27,10 @@ cargo build --release
 ## Usage
 
 ```bash
-# list pods in the current context
+# list pods in the active context
 cargo run -- pods list
 
-# list pods with a namespace and context override
+# list pods in a specific namespace and context
 cargo run -- --context prod --namespace payments pods list api
 
 # stream pod logs
@@ -39,12 +39,25 @@ cargo run -- logs follow api --tail 100
 # display the current context
 cargo run -- ctx current
 
-# switch to a different kube context
+# switch to a different kubectl context
 cargo run -- ctx use staging
 
-# view overall status
+# view overall status in all namespaces by default
 cargo run -- status overview
+
+# scope status checks to a namespace
+cargo run -- --namespace payments status overview
 ```
+
+## Scope semantics
+
+`kubectl` global flags are applied consistently:
+
+- if `--context` is set, it is forwarded to every kubectl call
+- if `--namespace` is set, the status commands operate only within that namespace
+- if no namespace is provided, the status commands default to all namespaces with `-A`
+
+This prevents conflicts between `-n` and `-A` while keeping cluster-wide status checks intuitive.
 
 ## Command reference
 
@@ -64,8 +77,9 @@ kube logs follow <pod-name> [--tail N]
 kube logs show <pod-name> [--tail N]
 ```
 
-- `follow` uses a streamed process and prints each log line as it arrives.
-- `show` reads the log stream once and exits after completion.
+- `follow` streams stdout from the kubectl process and prints each log line as it arrives
+- `show` fetches the log stream once and exits after completion
+- nonzero kubectl exit codes are surfaced as errors with stderr context when available
 
 ### Context
 
@@ -84,20 +98,21 @@ kube status deployments
 kube status issues
 ```
 
-This summarizes pod health and deployment availability from `kubectl get ...` output without requiring additional dependencies.
+The status commands use `kubectl get ... -o json` and parse the structured payload instead of brittle table text. This makes classification resilient to formatting changes and easier to unit test with JSON fixtures.
 
 ## Architecture
 
-- `src/main.rs` launches the CLI and dispatches commands.
-- `src/cli/` contains the Clap command definitions and handlers.
-- `src/context.rs` stores the shared namespace and context override.
-- `src/di.rs` defines the `Executor` abstraction used for testable `kubectl` interaction.
+- `src/main.rs` launches the CLI and dispatches commands
+- `src/cli/` contains the Clap command definitions and handlers
+- `src/context.rs` stores the shared namespace and context override
+- `src/di.rs` defines the `Executor` abstraction used for testable `kubectl` interaction
+- `src/cli/status.rs` contains the JSON-based status parsing and health classification functions
 
 ## Development
 
 ```bash
 cargo fmt
-cargo check
+cargo check --all-targets
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```

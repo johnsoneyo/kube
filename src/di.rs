@@ -34,7 +34,7 @@ impl Executor for Kubectl {
         let mut child = Command::new("kubectl")
             .args(args)
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .with_context(|| format!("failed to start kubectl {}", args.join(" ")))?;
 
@@ -51,10 +51,18 @@ impl Executor for Kubectl {
         }
 
         let status = child
-            .wait()
+            .wait_with_output()
             .with_context(|| format!("failed waiting for kubectl {}", args.join(" ")))?;
-        if !status.success() {
-            return Err(anyhow!("kubectl exited with status {status}"));
+
+        if !status.status.success() {
+            let stderr = String::from_utf8_lossy(&status.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&status.stdout).trim().to_string();
+            let message = if stderr.is_empty() { stdout } else { stderr };
+            return Err(anyhow!(
+                "kubectl stream failed{}{}",
+                if message.is_empty() { "" } else { ": " },
+                message
+            ));
         }
 
         Ok(())

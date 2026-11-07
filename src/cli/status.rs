@@ -1,5 +1,6 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::Subcommand;
+use serde::Deserialize;
 
 use crate::context::AppContext;
 use crate::di::Executor;
@@ -29,8 +30,8 @@ pub fn handle(cmd: StatusCmd, exec: &dyn Executor, context: AppContext) -> Resul
 }
 
 pub fn show_overview(exec: &dyn Executor, context: AppContext) -> Result<()> {
-    let pod_output = run_kubectl(exec, &context, &["get", "pods", "-A"])?;
-    let deployment_output = run_kubectl(exec, &context, &["get", "deployments", "-A"])?;
+    let pod_output = run_kubectl_json(exec, &context, "pods")?;
+    let deployment_output = run_kubectl_json(exec, &context, "deployments")?;
 
     let pod_summary = summarize_pods(&pod_output)?;
     let deployment_summary = summarize_deployments(&deployment_output)?;
@@ -41,14 +42,17 @@ pub fn show_overview(exec: &dyn Executor, context: AppContext) -> Result<()> {
         pod_summary.total, pod_summary.healthy, pod_summary.warning, pod_summary.failing
     );
     println!(
-        "Deployments: total={}, ready={}, unavailable={}",
-        deployment_summary.total, deployment_summary.ready, deployment_summary.unavailable
+        "Deployments: total={}, ready={}, partial={}, unavailable={}",
+        deployment_summary.total,
+        deployment_summary.ready,
+        deployment_summary.partial,
+        deployment_summary.unavailable
     );
     Ok(())
 }
 
 pub fn show_pods(exec: &dyn Executor, context: AppContext) -> Result<()> {
-    let output = run_kubectl(exec, &context, &["get", "pods", "-A"])?;
+    let output = run_kubectl_json(exec, &context, "pods")?;
     let summary = summarize_pods(&output)?;
     println!(
         "Pods: total={}, healthy={}, warnings={}, failing={}",
@@ -58,50 +62,32 @@ pub fn show_pods(exec: &dyn Executor, context: AppContext) -> Result<()> {
 }
 
 pub fn show_deployments(exec: &dyn Executor, context: AppContext) -> Result<()> {
-    let output = run_kubectl(exec, &context, &["get", "deployments", "-A"])?;
+    let output = run_kubectl_json(exec, &context, "deployments")?;
     let summary = summarize_deployments(&output)?;
     println!(
-        "Deployments: total={}, ready={}, unavailable={}",
-        summary.total, summary.ready, summary.unavailable
+        "Deployments: total={}, ready={}, partial={}, unavailable={}",
+        summary.total, summary.ready, summary.partial, summary.unavailable
     );
     Ok(())
 }
 
 pub fn show_issues(exec: &dyn Executor, context: AppContext) -> Result<()> {
-    let output = run_kubectl(exec, &context, &["get", "pods", "-A"])?;
-    let mut matches = Vec::new();
+    let output = run_kubectl_json(exec, &context, "pods")?;
+    let issues = pod_issues(&output)?;
 
-    for line in output.lines().skip(1) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let lower = trimmed.to_ascii_lowercase();
-        if lower.contains("crashloopbackoff")
-            || lower.contains("imagepullbackoff")
-            || lower.contains("pending")
-            || lower.contains("error")
-            || lower.contains("invalidimage")
-            || lower.contains("unknown")
-        {
-            matches.push(trimmed.to_string());
-        }
-    }
-
-    if matches.is_empty() {
+    if issues.is_empty() {
         println!("No failing resources detected.");
         return Ok(());
     }
 
-    for entry in matches {
+    for entry in issues {
         println!("{entry}");
     }
     Ok(())
 }
 
-fn run_kubectl(exec: &dyn Executor, context: &AppContext, tail: &[&str]) -> Result<String> {
-    let mut args = context.kubectl_base_args();
-    args.extend(tail.iter().map(|item| (*item).to_string()));
+fn run_kubectl_json(exec: &dyn Executor, context: &AppContext, resource: &str) -> Result<String> {
+    let args = context.kubectl_status_args(resource);
     let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
     exec.run(&args_ref)
 }
@@ -118,52 +104,286 @@ pub struct PodStatusSummary {
 pub struct DeploymentStatusSummary {
     pub total: usize,
     pub ready: usize,
+    pub partial: usize,
     pub unavailable: usize,
 }
 
-pub fn summarize_pods(output: &str) -> Result<PodStatusSummary> {
-    let mut summary = PodStatusSummary::default();
-    for line in output.lines().skip(1) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
+#[derive(Debug, Deserialize, Default)]
+struct KubernetesList<T> {
+    #[serde(default)]
+    items: Vec<T>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PodResource {
+    #[serde(default)]
+    metadata: Metadata,
+    #[serde(default)]
+    status: PodStatus,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct Metadata {
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PodStatus {
+    #[serde(default)]
+    phase: String,
+    #[serde(default)]
+    conditions: Vec<PodCondition>,
+    #[serde(default, rename = "containerStatuses")]
+    container_statuses: Vec<ContainerStatus>,
+    #[serde(default, rename = "initContainerStatuses")]
+    init_container_statuses: Vec<ContainerStatus>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PodCondition {
+    #[serde(rename = "type")]
+    type_: String,
+    #[serde(default)]
+    status: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, Default)]
+struct ContainerStatus {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    ready: bool,
+    #[serde(default)]
+    state: Option<ContainerState>,
+    #[serde(default)]
+    last_state: Option<ContainerState>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ContainerState {
+    #[serde(default)]
+    waiting: Option<ContainerStateDetail>,
+    #[serde(default)]
+    terminated: Option<ContainerStateDetail>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, Default)]
+struct ContainerStateDetail {
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    message: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, Default)]
+struct DeploymentResource {
+    #[serde(default)]
+    metadata: Metadata,
+    #[serde(default)]
+    spec: DeploymentSpec,
+    #[serde(default)]
+    status: DeploymentStatus,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DeploymentSpec {
+    #[serde(default)]
+    replicas: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DeploymentStatus {
+    #[serde(default)]
+    replicas: Option<u32>,
+    #[serde(default, rename = "readyReplicas")]
+    ready_replicas: Option<u32>,
+    #[serde(default, rename = "availableReplicas")]
+    available_replicas: Option<u32>,
+    #[serde(default, rename = "unavailableReplicas")]
+    unavailable_replicas: Option<u32>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PodClassification {
+    Healthy,
+    Warning,
+    Failing,
+}
+
+fn pod_waiting_reasons(pod: &PodResource) -> Vec<String> {
+    let mut reasons = Vec::new();
+
+    for statuses in [
+        &pod.status.container_statuses,
+        &pod.status.init_container_statuses,
+    ] {
+        for container in statuses {
+            if let Some(state) = &container.state {
+                if let Some(waiting) = &state.waiting {
+                    reasons.push(waiting.reason.clone());
+                }
+            }
         }
+    }
+
+    reasons
+}
+
+fn classify_pod(pod: &PodResource) -> PodClassification {
+    let phase = pod.status.phase.trim();
+    let phase_lower = phase.to_ascii_lowercase();
+    let waiting_reasons = pod_waiting_reasons(pod);
+
+    let has_completed_termination = [
+        &pod.status.container_statuses,
+        &pod.status.init_container_statuses,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|container| {
+        container
+            .state
+            .as_ref()
+            .and_then(|state| state.terminated.as_ref())
+            .is_some_and(|terminated| terminated.reason.eq_ignore_ascii_case("Completed"))
+    });
+
+    let ready = pod.status.conditions.iter().any(|condition| {
+        condition.type_.eq_ignore_ascii_case("Ready")
+            && condition.status.eq_ignore_ascii_case("True")
+    }) || (!pod.status.container_statuses.is_empty()
+        && pod
+            .status
+            .container_statuses
+            .iter()
+            .all(|container| container.ready));
+
+    if phase_lower == "succeeded" || has_completed_termination {
+        return PodClassification::Healthy;
+    }
+
+    if ready && (phase_lower == "running" || phase_lower == "active") {
+        return PodClassification::Healthy;
+    }
+
+    if phase_lower == "failed"
+        || waiting_reasons.iter().any(|reason| {
+            matches!(
+                reason.to_ascii_lowercase().as_str(),
+                "crashloopbackoff"
+                    | "imagepullbackoff"
+                    | "errimagepull"
+                    | "invalidimage"
+                    | "createcontainerconfigerror"
+                    | "createcontainererror"
+                    | "runcontainererror"
+            )
+        })
+    {
+        return PodClassification::Failing;
+    }
+
+    if phase_lower == "pending"
+        || phase_lower == "unknown"
+        || waiting_reasons.iter().any(|reason| {
+            matches!(
+                reason.to_ascii_lowercase().as_str(),
+                "containercreating" | "podinitializing" | "waiting" | "createcontainerconfigerror"
+            )
+        })
+    {
+        return PodClassification::Warning;
+    }
+
+    if ready {
+        PodClassification::Healthy
+    } else if phase_lower == "running" {
+        PodClassification::Warning
+    } else {
+        PodClassification::Failing
+    }
+}
+
+fn pod_issues(output: &str) -> Result<Vec<String>> {
+    let list: KubernetesList<PodResource> = serde_json::from_str(output)
+        .map_err(|err| anyhow!("failed to parse pod JSON for issues: {err}"))?;
+
+    let mut issues = Vec::new();
+    for pod in &list.items {
+        match classify_pod(pod) {
+            PodClassification::Failing => {
+                issues.push(format!(
+                    "{}: {}",
+                    pod.metadata.name,
+                    pod.status.phase.trim()
+                ));
+            }
+            PodClassification::Warning => {
+                if pod_waiting_reasons(pod).into_iter().any(|reason| {
+                    matches!(
+                        reason.to_ascii_lowercase().as_str(),
+                        "waiting" | "containercreating" | "podinitializing"
+                    )
+                }) {
+                    issues.push(format!("{}: pending", pod.metadata.name));
+                }
+            }
+            PodClassification::Healthy => {}
+        }
+    }
+
+    Ok(issues)
+}
+
+pub fn summarize_pods(output: &str) -> Result<PodStatusSummary> {
+    let list: KubernetesList<PodResource> =
+        serde_json::from_str(output).map_err(|err| anyhow!("failed to parse pod JSON: {err}"))?;
+
+    let mut summary = PodStatusSummary::default();
+    for pod in &list.items {
         summary.total += 1;
-        let lower = trimmed.to_ascii_lowercase();
-        if lower.contains("running") || lower.contains("completed") {
-            summary.healthy += 1;
-        } else if lower.contains("pending")
-            || lower.contains("crashloopbackoff")
-            || lower.contains("imagepullbackoff")
-            || lower.contains("createcontainerconfigerror")
-        {
-            summary.warning += 1;
-        } else {
-            summary.failing += 1;
+        match classify_pod(pod) {
+            PodClassification::Healthy => summary.healthy += 1,
+            PodClassification::Warning => summary.warning += 1,
+            PodClassification::Failing => summary.failing += 1,
         }
     }
     Ok(summary)
 }
 
 pub fn summarize_deployments(output: &str) -> Result<DeploymentStatusSummary> {
+    let list: KubernetesList<DeploymentResource> = serde_json::from_str(output)
+        .map_err(|err| anyhow!("failed to parse deployment JSON: {err}"))?;
+
     let mut summary = DeploymentStatusSummary::default();
-    for line in output.lines().skip(1) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
+    for deployment in &list.items {
         summary.total += 1;
-        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-        if parts.len() < 3 {
-            continue;
-        }
-        let ready = parts[1];
-        if let Some((current, total)) = ready.split_once('/') {
-            if current == total {
+
+        let desired = deployment
+            .spec
+            .replicas
+            .or(deployment.status.replicas)
+            .unwrap_or(0);
+        let ready = deployment.status.ready_replicas.unwrap_or(0);
+        let available = deployment.status.available_replicas.unwrap_or(0);
+        let unavailable = deployment.status.unavailable_replicas.unwrap_or(0);
+
+        if desired == 0 {
+            if ready == 0 && available == 0 && unavailable == 0 {
                 summary.ready += 1;
+            } else if available > 0 {
+                summary.partial += 1;
             } else {
                 summary.unavailable += 1;
             }
+        } else if available >= desired && unavailable == 0 {
+            summary.ready += 1;
+        } else if available > 0 || ready > 0 {
+            summary.partial += 1;
         } else {
             summary.unavailable += 1;
         }
@@ -215,7 +435,9 @@ mod tests {
 
     #[test]
     fn show_pods_includes_context_and_namespace() {
-        let exec = MockExecutor::new("NAME\tSTATUS\napi\tRunning\n");
+        let exec = MockExecutor::new(
+            r#"{"items":[{"metadata":{"name":"api"},"status":{"phase":"Running","containerStatuses":[{"ready":true,"state":{"running":{}}}]}}]}"#,
+        );
         let context = AppContext {
             namespace: Some("payments".to_string()),
             kube_context: Some("prod".to_string()),
@@ -225,27 +447,69 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(
             exec.args_for_last_call(),
-            vec!["--context", "prod", "-n", "payments", "get", "pods", "-A"]
+            vec![
+                "--context",
+                "prod",
+                "-n",
+                "payments",
+                "get",
+                "pods",
+                "-o",
+                "json"
+            ]
         );
     }
 
     #[test]
-    fn summarize_pods_counts_healthy_and_failing_resources() {
-        let output = "NAME\tREADY\tSTATUS\tRESTARTS\napi-1\t1/1\tRunning\t0\nweb\t0/1\tCrashLoopBackOff\t5\nworker\t0/1\tPending\t0\n";
+    fn summarize_pods_counts_healthy_warning_and_failing_resources() {
+        let output = r#"{
+            "items": [
+                {"metadata":{"name":"api"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"ready":true,"state":{"running":{}}}]}}
+                ,
+                {"metadata":{"name":"web"},"status":{"phase":"Running","containerStatuses":[{"ready":false,"state":{"waiting":{"reason":"CrashLoopBackOff"}}}]}}
+                ,
+                {"metadata":{"name":"worker"},"status":{"phase":"Pending","containerStatuses":[{"ready":false,"state":{"waiting":{"reason":"ContainerCreating"}}}]}}
+                ,
+                {"metadata":{"name":"db"},"status":{"phase":"Succeeded","containerStatuses":[{"ready":false,"state":{"terminated":{"reason":"Completed"}}}]}}
+            ]
+        }"#;
+
         let summary = summarize_pods(output).expect("pod summary should parse");
-        assert_eq!(summary.total, 3);
-        assert_eq!(summary.healthy, 1);
-        assert_eq!(summary.warning, 2);
-        assert_eq!(summary.failing, 0);
+        assert_eq!(summary.total, 4);
+        assert_eq!(summary.healthy, 2);
+        assert_eq!(summary.warning, 1);
+        assert_eq!(summary.failing, 1);
     }
 
     #[test]
-    fn summarize_deployments_counts_ready_and_unavailable_replicas() {
-        let output =
-            "NAME\tREADY\tUP-TO-DATE\tAVAILABLE\tAGE\napi\t2/2\t2\t2\t1d\nweb\t1/2\t2\t1\t2h\n";
+    fn summarize_pods_rejects_malformed_json() {
+        let result = summarize_pods("{not valid json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn summarize_deployments_counts_ready_partial_and_unavailable_replicas() {
+        let output = r#"{
+            "items": [
+                {"metadata":{"name":"api"},"spec":{"replicas":2},"status":{"readyReplicas":2,"availableReplicas":2,"unavailableReplicas":0}},
+                {"metadata":{"name":"web"},"spec":{"replicas":2},"status":{"readyReplicas":1,"availableReplicas":1,"unavailableReplicas":1}},
+                {"metadata":{"name":"worker"},"spec":{"replicas":1},"status":{"readyReplicas":0,"availableReplicas":0,"unavailableReplicas":1}}
+            ]
+        }"#;
+
         let summary = summarize_deployments(output).expect("deployments summary should parse");
-        assert_eq!(summary.total, 2);
+        assert_eq!(summary.total, 3);
         assert_eq!(summary.ready, 1);
+        assert_eq!(summary.partial, 1);
         assert_eq!(summary.unavailable, 1);
+    }
+
+    #[test]
+    fn summarize_deployments_allows_empty_lists() {
+        let summary = summarize_deployments(r#"{"items":[]}"#).expect("empty list should parse");
+        assert_eq!(summary.total, 0);
+        assert_eq!(summary.ready, 0);
+        assert_eq!(summary.partial, 0);
+        assert_eq!(summary.unavailable, 0);
     }
 }
